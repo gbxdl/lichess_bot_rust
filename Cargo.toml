@@ -1,0 +1,17 @@
+[package]
+name = "rust_bot"
+version = "0.1.0"
+authors = ["Daan Leermakers"]
+edition = "2018"
+
+[lib]
+name = "rust_bot"
+path = "src/lib.rs"
+crate-type = ["cdylib"]
+
+[dependencies]
+chess="3.2.0"
+
+[dependencies.cpython]
+version = "0.5"
+features = ["extension-module"]
