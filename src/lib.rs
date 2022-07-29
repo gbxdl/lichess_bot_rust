@@ -14,7 +14,7 @@ py_module_initializer!(rust_bot, |py, m| {
     Ok(())
 });
 
-fn best_move(board: Board, depth: i8) -> ChessMove {
+pub fn best_move(board: Board, depth: i8) -> ChessMove {
     let board = board;
 
     let mut best_score = -isize::pow(10, 9);
@@ -48,8 +48,12 @@ fn best_move(board: Board, depth: i8) -> ChessMove {
 }
 
 fn score_move(board: Board, depth: i8, mut alpha: isize, beta: isize) -> isize {
+    if board.status() != BoardStatus::Ongoing {
+        return evaluate_game_over(board, depth);
+    }
+
     if depth == 0 {
-        return evaluate_only_stable(board, alpha, beta, 100);
+        return evaluate_only_stable(board, alpha, beta, depth);
     }
 
     for mov in MoveGen::new_legal(&board) {
@@ -71,7 +75,7 @@ fn score_move(board: Board, depth: i8, mut alpha: isize, beta: isize) -> isize {
 fn evaluate_only_stable(board: Board, mut alpha: isize, beta: isize, depth: i8) -> isize {
     let normal_eval = evaluate_position(board, depth);
 
-    if depth == -100 {
+    if depth == -10 {
         // can be made larger to not check all captures
         return normal_eval;
     }
@@ -89,8 +93,11 @@ fn evaluate_only_stable(board: Board, mut alpha: isize, beta: isize, depth: i8) 
     let targets = board.color_combined(!board.side_to_move());
     legal_captures.set_iterator_mask(*targets);
 
+    //first sort capture moves
+    let sorted_captures = sort_captures(board, legal_captures);
+
     // loop over all capture moves
-    for mov in legal_captures {
+    for (mov, _) in sorted_captures {
         let score = -evaluate_only_stable(board.make_move_new(mov), -beta, -alpha, depth - 1);
 
         if score >= beta {
@@ -101,15 +108,41 @@ fn evaluate_only_stable(board: Board, mut alpha: isize, beta: isize, depth: i8) 
         }
     }
     alpha
+}
 
-    // todo: loop over capture moves if feasable.
+fn sort_captures(board: Board, captures: MoveGen) -> Vec<(ChessMove, isize)> {
+    let mut move_piece_differences = Vec::with_capacity(captures.len());
+
+    for capture in captures {
+        let taking_piece = board.piece_on(capture.get_source());
+        let taken_piece = board.piece_on(capture.get_dest());
+        let taking_value = match taking_piece {
+            Some(Piece::Queen) => 9,
+            Some(Piece::Rook) => 5,
+            Some(Piece::Bishop) => 3,
+            Some(Piece::Knight) => 3,
+            Some(Piece::Pawn) => 1,
+            Some(Piece::King) => 10,
+            _ => unreachable!("no capturing piece."),
+        };
+        let taken_value = match taken_piece {
+            Some(Piece::Queen) => 9,
+            Some(Piece::Rook) => 5,
+            Some(Piece::Bishop) => 3,
+            Some(Piece::Knight) => 3,
+            Some(Piece::Pawn) => 1,
+            _ => unreachable!("no captured piece."),
+        };
+
+        move_piece_differences.push((capture, taking_value - taken_value));
+    }
+    move_piece_differences.sort_unstable_by_key(|k| k.1);
+
+    move_piece_differences
 }
 
 fn evaluate_position(board: Board, depth: i8) -> isize {
     // todo: move out of check, check game over
-    if board.status() != BoardStatus::Ongoing {
-        return evaluate_game_over(board, depth);
-    }
     if *board.checkers() != EMPTY {
         return evaluate_out_of_check(board, depth);
     }
@@ -123,7 +156,7 @@ fn evaluate_position(board: Board, depth: i8) -> isize {
 
 fn evaluate_game_over(board: Board, depth: i8) -> isize {
     match board.status() {
-        BoardStatus::Checkmate => -isize::pow(10, 7) + depth as isize,
+        BoardStatus::Checkmate => -isize::pow(10, 7) - depth as isize,
         BoardStatus::Stalemate => 0,
         BoardStatus::Ongoing => unreachable!("Should already not be ongoing."),
     }
@@ -231,16 +264,71 @@ mod tests {
 
     #[test]
     fn test_best_move_depth_1() {
+        //depth 1 really means depth 2
         let fens = [
             "8/8/8/5k2/2K5/8/8/2Q4r b - - 0 1",
             "8/6p1/7p/5kn1/8/PP6/QP6/K7 w - - 0 1",
             "6k1/8/1q5P/8/8/8/1Q1K4/8 w - - 0 1",
+            "6k1/4bp2/1qp5/3p4/2R3n1/1NB5/1Q1P2PP/6RK b - - 0 1",
+            "1q4k1/5pp1/7p/8/8/1Q2R3/7R/4K3 b - - 0 1",
+            "5Q2/1k6/N7/PP6/1K4PP/8/8/8 w - - 1 64",
         ];
-        let outs = ["h1c1", "a2b1", "b2g7"].map(|mov| ChessMove::from_str(mov).unwrap());
+        let outs = ["h1c1", "a2b1", "b2g7", "g4f2", "b8h2", "f8b8"]
+            .map(|mov| ChessMove::from_str(mov).unwrap());
 
         for (fen, out) in zip(fens, outs) {
             let board = Board::from_str(fen).unwrap();
             assert_eq!(best_move(board, 1), out);
+        }
+    }
+
+    #[test]
+    fn test_best_move_depth_2() {
+        let fens = [
+            "8/8/8/5k2/2K5/8/8/2Q4r b - - 0 1",
+            "6k1/4bp2/1qp5/3p4/2R3n1/1NB5/1Q1P2PP/6RK b - - 0 1",
+            "1q4k1/2R2ppp/8/8/8/1Q6/8/4K3 b - - 0 1",
+            "5Q2/1k6/N7/PP6/1K4PP/8/8/8 w - - 1 64",
+            // "1q4k1/5pp1/7p/8/8/1Q2R3/7R/4K3 b - - 0 1",
+        ];
+        let outs = [
+            "h1c1", "g4f2", "b8c7", "f8b8",
+            // "b8h2"
+        ]
+        .map(|mov| ChessMove::from_str(mov).unwrap());
+
+        for (fen, out) in zip(fens, outs) {
+            let board = Board::from_str(fen).unwrap();
+            assert_eq!(best_move(board, 2), out);
+        }
+    }
+
+    #[test]
+    fn test_best_move_depth_3() {
+        let fens = [
+            "8/8/8/5k2/2K5/8/8/2Q4r b - - 0 1",
+            "6k1/8/1q5P/8/8/8/1Q1K4/8 w - - 0 1",
+            "6k1/4bp2/1qp5/3p4/2R3n1/1NB5/1Q1P2PP/6RK b - - 0 1",
+            "7r/8/8/5k2/2K5/8/8/2Q5 b - - 0 1",
+            "1q4k1/5pp1/7p/8/8/1Q2R3/7R/4K3 b - - 0 1",
+            "5Q2/1k6/N7/PP6/1K4PP/8/8/8 w - - 1 64",
+        ];
+        let outs = ["h1c1", "b2g7", "g4f2", "h8c8", "b8h2", "f8b8"]
+            .map(|mov| ChessMove::from_str(mov).unwrap());
+
+        for (fen, out) in zip(fens, outs) {
+            let board = Board::from_str(fen).unwrap();
+            assert_eq!(best_move(board, 3), out);
+        }
+    }
+
+    #[test]
+    fn test_avoid_statemate() {
+        let fens = ["5Q2/2k5/8/1PN5/P1K3P1/8/7P/8 w - - 1 59"];
+        let outs = ["a4a5"].map(|mov| ChessMove::from_str(mov).unwrap());
+        for (fen, out) in zip(fens, outs) {
+            let board = Board::from_str(fen).unwrap();
+            assert_ne!(best_move(board, 3), out);
         }
     }
 }
